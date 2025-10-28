@@ -19,7 +19,7 @@ try:
 except Exception:
     HAS_JA = False
 
-TITLE = "Instagram キャプション分析ダッシュボード（頻度・ハッシュタグ・共起）"
+TITLE = "Instagram キャプション分析（頻度・ハッシュタグ・共起）"
 
 # ========= ユーティリティ =========
 URL_RE       = re.compile(r"https?://\S+")
