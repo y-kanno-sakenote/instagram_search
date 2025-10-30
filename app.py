@@ -10,6 +10,10 @@ import streamlit as st
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from PIL import Image
+import unicodedata
 
 # 日本語トークナイザ（軽量）：fugashi + unidic-lite
 try:
@@ -164,6 +168,38 @@ def tokenize_mixed(text: str) -> list[str]:
         filtered.append(t)
 
     return filtered
+
+
+def _find_japanese_font_candidate():
+    """macOS 向けに代表的なフォントパスを試し、存在するものを返す。
+    見つからなければ None を返す。ユーザ環境に依存するため、必要ならパスを明示してください。"""
+    candidates = [
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴ ProN W3.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック ProN.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/Library/Fonts/ヒラギノ角ゴシック ProN W3.ttc",
+    ]
+    for p in candidates:
+        try:
+            if os.path.exists(p):
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def generate_wordcloud_from_frequencies(freq_dict, width=800, height=400, font_path=None):
+    """freq_dict: {word: count}
+    戻り値: PIL.Image
+    """
+    if not freq_dict:
+        return None
+    wc = WordCloud(width=width, height=height, background_color="white", font_path=font_path)
+    wc.generate_from_frequencies(freq_dict)
+    img = wc.to_image()
+    return img
 
 def build_counts(list_of_lists):
     c = Counter()
@@ -330,7 +366,7 @@ st.title(TITLE)
 st.sidebar.header("データ入力")
 uploaded = st.sidebar.file_uploader("CSVをアップロード（caption列 必須）", type=["csv"])
 default_path = st.sidebar.text_input("またはファイルパス指定", value="")
-# サンプルデータで手早く試すボタン
+# サンプルデータで手早く試す（チェックボックスにして rerun 時に状態を保持）
 use_demo = st.sidebar.button("デモデータで試す")
 
 # フィルタ設定
@@ -360,25 +396,46 @@ st.sidebar.markdown("---")
 st.sidebar.caption("注: 日本語分かち書きは fugashi を利用。未導入でも英語/簡易トークンで動きます。")
 
 # ========= ロード =========
+# 読み込んだ DataFrame を session_state に保持しておくことで、
+# ページの再実行（ワードクラウド切替など）時に読み直し／空状態に戻らないようにする
 df = None
 src = ""
-if use_demo:
+# まず既に session_state に保存されているものを復元
+if st.session_state.get("df_loaded") is not None:
+    df = st.session_state.get("df_loaded")
+    src = st.session_state.get("src", "")
+
+# ユーザ操作で新たに読み込まれた場合は上書きして session_state に保存
+if uploaded is not None:
     try:
-        df = pd.read_csv("sample.csv")
-        src = "sample.csv (demo)"
+        df = pd.read_csv(uploaded)
+        src = uploaded.name
+        st.session_state["df_loaded"] = df
+        st.session_state["src"] = src
     except Exception as e:
-        st.error(f"デモデータ読み込みエラー: {e}")
+        st.error(f"CSV読込エラー: {e}")
         df = None
         src = ""
-if uploaded is not None:
-    df = pd.read_csv(uploaded)
-    src = uploaded.name
 elif default_path:
     try:
         df = pd.read_csv(default_path)
         src = default_path
+        st.session_state["df_loaded"] = df
+        st.session_state["src"] = src
     except Exception as e:
         st.error(f"CSV読込エラー: {e}")
+        df = None
+        src = ""
+elif use_demo:
+    try:
+        df = pd.read_csv("sample.csv")
+        src = "sample.csv (demo)"
+        st.session_state["df_loaded"] = df
+        st.session_state["src"] = src
+    except Exception as e:
+        st.error(f"デモデータ読み込みエラー: {e}")
+        df = None
+        src = ""
 
 if df is None:
     st.info("左のサイドバーから CSV をアップロードするか、ファイルパスを指定してください。")
@@ -416,60 +473,122 @@ with st.spinner("前処理中..."):
     FILTER_STOPWORDS = bool(filter_stopwords)
     df["__tokens__"] = df["__text__"].apply(tokenize_mixed)
 
-# ========= 頻度集計 =========
-word_counts = build_counts(df["__tokens__"].tolist())
-tag_counts  = build_counts(df["__hashtags__"].tolist())
-
-# 表示
-st.subheader("頻出キーワード（本文）")
-if len(word_counts)==0:
-    st.write("（本文トークンがありません）")
+# ========= 頻度集計 (キャッシュ利用) =========
+# 重いトークン化処理やファイル読み込みを切替で繰り返さないため、
+# 一度計算したトークン/タグ一覧と頻度を session_state に保持する。
+cache_sig = (src, int(MIN_TOKEN_LEN), bool(FILTER_STOPWORDS), TOKEN_EXTRACTION_MODE, len(df))
+if st.session_state.get("cache_sig") != cache_sig:
+    # 再計算が必要な場合
+    st.session_state["cache_sig"] = cache_sig
+    st.session_state["__tokens_list__"] = df["__tokens__"].tolist()
+    st.session_state["__hashtags_list__"] = df["__hashtags__"].tolist()
+    st.session_state["word_counts"] = build_counts(st.session_state["__tokens_list__"])
+    st.session_state["tag_counts"] = build_counts(st.session_state["__hashtags_list__"])
+    st.session_state["_cached_from"] = "recomputed"
 else:
-    wc_df = pd.DataFrame(word_counts.most_common(topn_words), columns=["token", "count"])
-    st.dataframe(wc_df, use_container_width=True)
-    csv = wc_df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ キーワード頻度CSVをダウンロード", data=csv, file_name="word_freq.csv", mime="text/csv")
+    # キャッシュから復帰
+    st.session_state["_cached_from"] = "session_state"
 
-st.subheader("頻出ハッシュタグ")
-if len(tag_counts)==0:
-    st.write("（ハッシュタグがありません）")
-else:
-    tc_df = pd.DataFrame(tag_counts.most_common(topn_tags), columns=["hashtag", "count"])
-    st.dataframe(tc_df, use_container_width=True)
-    csv2 = tc_df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ ハッシュタグ頻度CSVをダウンロード", data=csv2, file_name="hashtag_freq.csv", mime="text/csv")
+word_counts = st.session_state.get("word_counts", Counter())
+tag_counts = st.session_state.get("tag_counts", Counter())
 
-# ========= 共起ネットワーク =========
-st.subheader("共起ネットワーク")
-with st.spinner("共起ネットワークを生成中..."):
-    G, node_strength = build_cooccurrence(
-        df["__tokens__"].tolist(),
-        df["__hashtags__"].tolist(),
-        mode=mode,
-        min_count_nodes=int(min_node),
-        min_weight=int(min_edge),
-        # UI の topn を利用してノード数を抑える
-        top_n_words=int(topn_words),
-        top_n_tags=int(topn_tags),
-        # 文書ごとのトークン数を制限（軽量化）
-        max_tokens_per_doc=10,
-        # 各ノードが持つエッジ数を制限（さらに軽量化）
-        max_edges_per_node=10,
-    )
+# タブ構成: タブ1=ワード (頻出キーワード・ハッシュタグ), タブ2=分析 (共起ネットワーク・ワードクラウド)
+tab1, tab2 = st.tabs(["ワード", "分析"])
 
-    if G.number_of_nodes() == 0:
-        st.write("（条件に合致する共起ネットワークがありません）")
+with tab1:
+    st.subheader("頻出キーワード（本文）")
+    if len(word_counts) == 0:
+        st.write("（本文トークンがありません）")
     else:
-        html = pyvis_html(G, node_strength, height="750px")
-        components.html(html, height=780, scrolling=True)
+        wc_df = pd.DataFrame(word_counts.most_common(topn_words), columns=["token", "count"])
+        st.dataframe(wc_df, use_container_width=True)
+        csv = wc_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ キーワード頻度CSVをダウンロード", data=csv, file_name="word_freq.csv", mime="text/csv")
 
-        # HTMLエクスポート
-        st.download_button(
-            "⬇️ ネットワークHTMLをダウンロード",
-            data=html.encode("utf-8"),
-            file_name="cooccurrence_network.html",
-            mime="text/html"
+    st.subheader("頻出ハッシュタグ")
+    if len(tag_counts) == 0:
+        st.write("（ハッシュタグがありません）")
+    else:
+        tc_df = pd.DataFrame(tag_counts.most_common(topn_tags), columns=["hashtag", "count"])
+        st.dataframe(tc_df, use_container_width=True)
+        csv2 = tc_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ ハッシュタグ頻度CSVをダウンロード", data=csv2, file_name="hashtag_freq.csv", mime="text/csv")
+
+with tab2:
+    st.subheader("共起ネットワーク")
+    with st.spinner("共起ネットワークを生成中..."):
+        G, node_strength = build_cooccurrence(
+            df["__tokens__"].tolist(),
+            df["__hashtags__"].tolist(),
+            mode=mode,
+            min_count_nodes=int(min_node),
+            min_weight=int(min_edge),
+            top_n_words=int(topn_words),
+            top_n_tags=int(topn_tags),
+            max_tokens_per_doc=10,
+            max_edges_per_node=10,
         )
+
+        if G.number_of_nodes() == 0:
+            st.write("（条件に合致する共起ネットワークがありません）")
+        else:
+            html = pyvis_html(G, node_strength, height="750px")
+            components.html(html, height=780, scrolling=True)
+            st.download_button(
+                "⬇️ ネットワークHTMLをダウンロード",
+                data=html.encode("utf-8"),
+                file_name="cooccurrence_network.html",
+                mime="text/html",
+            )
+
+    st.markdown("---")
+    # タイトルを先に表示し、その下にソース切替を置いてから画像を生成・表示する
+    st.subheader("ワードクラウド")
+    wc_source = st.radio("ワードクラウドのソース", ["本文キーワード", "ハッシュタグ"], index=0, key="wc_source_tab")
+    try:
+        if wc_source == "ハッシュタグ":
+            if len(tag_counts) == 0:
+                st.info("ワードクラウド用のハッシュタグが見つかりません。")
+                freq_dict = {}
+            else:
+                freq_limit = int(topn_tags) if topn_tags is not None else len(tag_counts)
+                top_items = tag_counts.most_common(freq_limit)
+                freq_dict = {("#" + w if not w.startswith("#") else w): c for w, c in top_items}
+        else:
+            if len(word_counts) == 0:
+                st.info("ワードクラウド用の本文キーワードが見つかりません。")
+                freq_dict = {}
+            else:
+                freq_limit = int(topn_words) if topn_words is not None else len(word_counts)
+                top_items = word_counts.most_common(freq_limit)
+                freq_dict = {w: c for w, c in top_items}
+
+        def _has_cjk(s):
+            for ch in s:
+                try:
+                    name = unicodedata.name(ch)
+                except Exception:
+                    name = ""
+                if "CJK" in name or "HIRAG" in name or "KATAK" in name:
+                    return True
+            return False
+
+        has_jp = any(_has_cjk(w) for w in freq_dict.keys())
+        font_path = None
+        if has_jp:
+            font_path = _find_japanese_font_candidate()
+            if not font_path:
+                st.warning("日本語ワードクラウドを正しく表示するためのフォントが見つかりませんでした。日本語が空白になる場合はシステムの日本語対応フォントパスを指定してください。")
+
+        img = generate_wordcloud_from_frequencies(freq_dict, width=800, height=400, font_path=font_path)
+        if img is not None:
+            st.image(img, use_container_width=True)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            st.download_button("⬇️ ワードクラウドをPNGでダウンロード", data=buf, file_name="wordcloud.png", mime="image/png")
+    except Exception as e:
+        st.warning(f"ワードクラウド生成中にエラーが発生しました: {e}")
 
 # ========= メモ =========
 #with st.expander("注意点・調整のヒント", expanded=False):

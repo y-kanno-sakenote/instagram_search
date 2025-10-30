@@ -4,3 +4,5 @@ networkx>=3.0
 pyvis>=0.3
 fugashi[unidic-lite]>=1.3
 unidic-lite
+wordcloud
+matplotlib
