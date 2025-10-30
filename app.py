@@ -575,10 +575,29 @@ with tab2:
 
         has_jp = any(_has_cjk(w) for w in freq_dict.keys())
         font_path = None
-        if has_jp:
+        # まずリポジトリ直下の `fonts/` ディレクトリを探す（ユーザが配置したフォントを優先）
+        try:
+            repo_fonts_dir = os.path.join(os.path.dirname(__file__), "fonts")
+            if os.path.isdir(repo_fonts_dir):
+                for name in os.listdir(repo_fonts_dir):
+                    if name.lower().endswith((".ttf", ".otf")):
+                        font_path = os.path.join(repo_fonts_dir, name)
+                        break
+            # 互換のため旧来の assets/fonts もチェック
+            if font_path is None:
+                repo_font = os.path.join(os.path.dirname(__file__), "assets", "fonts", "NotoSansJP-Regular.otf")
+                if os.path.exists(repo_font):
+                    font_path = repo_font
+        except Exception:
+            font_path = None
+
+        # システム候補は最後に試す
+        if has_jp and not font_path:
             font_path = _find_japanese_font_candidate()
             if not font_path:
                 st.warning("日本語ワードクラウドを正しく表示するためのフォントが見つかりませんでした。日本語が空白になる場合はシステムの日本語対応フォントパスを指定してください。")
+        if font_path:
+            st.caption(f"使用フォント: {font_path}")
 
         img = generate_wordcloud_from_frequencies(freq_dict, width=800, height=400, font_path=font_path)
         if img is not None:
