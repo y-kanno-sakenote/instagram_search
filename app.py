@@ -596,8 +596,6 @@ with tab2:
             font_path = _find_japanese_font_candidate()
             if not font_path:
                 st.warning("日本語ワードクラウドを正しく表示するためのフォントが見つかりませんでした。日本語が空白になる場合はシステムの日本語対応フォントパスを指定してください。")
-        if font_path:
-            st.caption(f"使用フォント: {font_path}")
 
         img = generate_wordcloud_from_frequencies(freq_dict, width=800, height=400, font_path=font_path)
         if img is not None:
