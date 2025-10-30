@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Virtualenv / env
+.env
+venv/
+
+# distribution
+*.egg-info/
+/dist
+
+# Jupyter
+.ipynb_checkpoints
